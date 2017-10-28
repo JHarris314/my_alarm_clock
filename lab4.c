@@ -116,7 +116,8 @@ void tcnt0_init(void){
 void tcnt2_init(void){
 	TIMSK  |=  (1 << TOIE2); //enable TCNT2 overflow interrupt
 	//Normal mode, 128 pre-scale, Set OC2 on compare, clear OC2 at BOTTOM
-	TCCR2  |=  (1 << CS21)|(1 << CS20);//|(1 << COM21)|(1 << COM20);
+	TCCR2 |= (1 << CS21)|(1 << CS20)|(1 << COM21)|(1 << COM20);
+	TCCR2 |= (1 << WGM21)|(1 << WGM20);
 }
 
 //***********************************************************************************
@@ -156,23 +157,22 @@ void segsum(uint16_t sum) {
 //a switch statement. Each case is either skipped or increments the 
 //display value in accord with the selected state. 
 /*************************************************************************/
-//void left_encoder(uint8_t past_encoder, uint8_t  encoder) {
-//	uint8_t direc = (past_encoder << 2 | encoder);
-//	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
-//		case 0x01: 
-//		case 0x0E:	  
-//		case 0x08: 
-//		case 0x07: OCR2=(1 << OCR2)/255;
-//		//Decrement
-//		case 0x04: 
-//		case 0x0B: 
-//		case 0x02: 
-//		case 0x0D: if (time_mode == minute_mode) {my_time.minute--;} //increment in quad
-//							 else if (time_mode == hour_mode) {my_time.hour--;}
-//							  break;
-//		default: break;
-//	}//switch
-//}//right_encoder
+void left_encoder(uint8_t past_encoder, uint8_t  encoder) {
+	uint8_t direc = (past_encoder << 2 | encoder);
+	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
+		case 0x01: 
+		case 0x0E:	  
+		case 0x08: 
+		case 0x07: OCR2++;
+							 break;
+		//Decrement
+		case 0x04: 
+		case 0x0B: 
+		case 0x02: 
+		case 0x0D: OCR2--;
+		default: break;
+	}//switch
+}//right_encoder
 
 /******************************************************************************/
 //                             left_ encoder
@@ -247,7 +247,6 @@ ISR(TIMER2_OVF_vect) {
 	DDRA = 0x00;  //intitialize PORTA to inputs
 	PORTA = 0xFF; //enable pull-ups
 	PORTB = 0x70;
-
 	//Check the buttons (0 and 1)
 	for(uint8_t i=0; i < 2; i++) {
 		if(chk_buttons(i)) { //if button is pressed
@@ -271,7 +270,7 @@ ISR(TIMER2_OVF_vect) {
 
 	segsum(disp_value); //call segsum
 	right_encoder((past_encoder & 0x0C) >> 2, (encoder & 0x0C) >> 2); //encoder 1 first pair of bits
- // left_encoder((past_encoder & 0x03), (encoder & 0x03));
+  left_encoder((past_encoder & 0x03), (encoder & 0x03));
 
   if (my_time.hour > 24) {my_time.hour = 0;}
 	if (my_time.minute > 59) {my_time.minute = 0;}
