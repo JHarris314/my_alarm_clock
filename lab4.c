@@ -33,6 +33,8 @@
 #include <util/delay.h>
 #define clr_bit(x,y) (x&=~(1<<y)) //clears a bit
 #define set_bit(x,y) (x|=(1<<y))  //sets a bit 
+#define minute_mode 0x01
+#define hour_mode 0x10
 
 struct time {
 		uint16_t second;
@@ -40,12 +42,13 @@ struct time {
 		uint16_t hour;
 };
 
-struct time my_time = {0, 0, 0};
-uint16_t disp_value = 0; //value to be displayed on the 7seg
-uint8_t time_mode = 0x01;
+volatile struct time my_time = {0, 0, 0};
+volatile uint16_t disp_value = 0; //value to be displayed on the 7seg
+volatile uint8_t time_mode = minute_mode;
 
-//holds data to be sent to the segments. logic zero turns segment on
-uint8_t segment_data[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+//holds data to be sent to the segments. logic zero turns segment o
+
+volatile uint8_t segment_data[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 //decimal to 7-segment LED display encodings, logic "0" turns on segment
 uint8_t dec_to_7seg[12] = {
@@ -80,7 +83,6 @@ uint8_t chk_buttons(uint8_t button) {
 }
 //*****************************************************************************
 
-/***********************************************************************/
 //                            spi_init                               
 //Initalizes the SPI port on the mega128. Does not do any further   
 //external device specific initalizations.  Sets up SPI to be:                        
@@ -112,8 +114,9 @@ void tcnt0_init(void){
 //Interrupt occurs at overflow 0xFF.
 //*********************************************************************/
 void tcnt2_init(void){
-	TIMSK  |=  (1 << TOIE2); //enable TCNT1 overflow interrupt
-	TCCR2  |=  (1 << CS21) | (1 << CS20); //normal mode, prescale of 128
+	TIMSK  |=  (1 << TOIE2); //enable TCNT2 overflow interrupt
+	//Normal mode, 128 pre-scale, Set OC2 on compare, clear OC2 at BOTTOM
+	TCCR2  |=  (1 << CS21)|(1 << CS20);//|(1 << COM21)|(1 << COM20);
 }
 
 //***********************************************************************************
@@ -147,38 +150,57 @@ void segsum(uint16_t sum) {
 /*************************************************************************/
 
 /*************************************************************************/
-//                              right_encoder
+//                              left_encoder
 //Takes the past encoder value and the present encoder value and shifts                                                             
 //them into an eight bit integer. This value is represented as a case in
 //a switch statement. Each case is either skipped or increments the 
 //display value in accord with the selected state. 
 /*************************************************************************/
+//void left_encoder(uint8_t past_encoder, uint8_t  encoder) {
+//	uint8_t direc = (past_encoder << 2 | encoder);
+//	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
+//		case 0x01: 
+//		case 0x0E:	  
+//		case 0x08: 
+//		case 0x07: OCR2=(1 << OCR2)/255;
+//		//Decrement
+//		case 0x04: 
+//		case 0x0B: 
+//		case 0x02: 
+//		case 0x0D: if (time_mode == minute_mode) {my_time.minute--;} //increment in quad
+//							 else if (time_mode == hour_mode) {my_time.hour--;}
+//							  break;
+//		default: break;
+//	}//switch
+//}//right_encoder
+
+/******************************************************************************/
+//                             left_ encoder
+//Takes the past encoder value and the present encoder value and shifts                                                             
+//them into an eight bit integer. This value is represented as a case in
+//a switch statement. Each case is either skipped or increments the 
+//display value in accord with the selected state. 
+/*****************************************************************************/
 void right_encoder(uint8_t past_encoder, uint8_t  encoder) {
 	uint8_t direc = (past_encoder << 2 | encoder);
 	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
 		case 0x01: 
 		case 0x0E:	  
 		case 0x08: 
-		case 0x07: if (time_mode == 0x01) {my_time.minute++;} //increment if in quad mode
-							 else if (time_mode == 0x10) {my_time.hour++;}	 
+		case 0x07: if (time_mode == minute_mode) {my_time.minute++;} //increment if in quad mode
+							 else if (time_mode == hour_mode) {my_time.hour++;}	 
 							  break;
 		//Decrement
 		case 0x04: 
 		case 0x0B: 
 		case 0x02: 
-		case 0x0D: if (time_mode == 0x01) {my_time.minute--;} //increment in quad
-							 else if (time_mode == 0x10) {my_time.hour--;}
+		case 0x0D: if (time_mode == minute_mode) {my_time.minute--;} //increment in quad
+							 else if (time_mode == hour_mode) {my_time.hour--;}
 							  break;
 		default: break;
 	}//switch
 }//right_encoder
-
 /*************************************************************************/
-//                             left_ encoder
-//Takes the past encoder value and the present encoder value and shifts                                                             
-//them into an eight bit integer. This value is represented as a case in
-//a switch statement. Each case is either skipped or increments the 
-//display value in accord with the selected state. 
 /*************************************************************************/
 
 ISR(TIMER0_OVF_vect) {	
@@ -187,7 +209,6 @@ ISR(TIMER0_OVF_vect) {
 	my_time.second++;
 	if (my_time.second == 59) {
 		my_time.minute++;
-		disp_value++;
 		my_time.second = 0;
 	}
 
@@ -216,33 +237,30 @@ void display_time () {
 //(1/32768)*256*64 = 500mS
 //*************************************************************************/
 ISR(TIMER2_OVF_vect) {
-	static uint8_t display_mode = 0; //variable to store selected mode (single, double, quad, disable)
 	static uint8_t encoder = 0; //stores current encoder state value (11, 10, 00, 01)
 	static uint8_t past_encoder = 0; //stores previous encoder state value
 	static uint8_t j = 0; //segment display variable
-
-	//Initialize ports
-	DDRA = 0x00;  //intitialize PORTA to inputs
-	PORTA = 0xFF; //enable pull-ups
-	DDRB |= 0xF0; //bits 4-7 outputs
-	PORTB = 0x70; //enable pull-ups on bits 4-6
-	DDRE = 0x40;  //set bit 6 to output
 	//Load data from the encoders
 	clr_bit(PORTE, PE6); //load data in the 165
 	set_bit(PORTE, PE6); //shift data out the 165
+	
+	DDRA = 0x00;  //intitialize PORTA to inputs
+	PORTA = 0xFF; //enable pull-ups
+	PORTB = 0x70;
 
 	//Check the buttons (0 and 1)
 	for(uint8_t i=0; i < 2; i++) {
 		if(chk_buttons(i)) { //if button is pressed
 			switch(i) { //cases for buttons pressed
-				case 0: time_mode = 0x01; //button 0 pressed
+				case 0: time_mode = minute_mode; //button 0 pressed
 								break;	
-				case 1: time_mode = 0x10; //button 1 pressed
+				case 1: time_mode = hour_mode; //button 1 pressed
 								break;
 			}//switch
 		}//if			
 	}//for
 
+	SPDR = my_time.second;
 	while (bit_is_clear(SPSR, SPIF)){} //wait until the end of the load
 	PORTB |= 0x01;  //rising edge for ss_n pin on 595
 	PORTB &= ~0x01; //falling edge for ss_n pin on 595
@@ -251,13 +269,13 @@ ISR(TIMER2_OVF_vect) {
 	encoder = SPDR; //set encoder equal to the SPI data register
 	encoder &= (0x0F); //set all encoder bits (3:0) high
 
-  //Call encoder exchange on both encoders.
-	//The static integer disp_value is passed by reference for change in the function
-		
-	right_encoder(past_encoder & 0x03, encoder & 0x03); //encoder 1 first pair of bits
-  
-  display_time();
 	segsum(disp_value); //call segsum
+	right_encoder((past_encoder & 0x0C) >> 2, (encoder & 0x0C) >> 2); //encoder 1 first pair of bits
+ // left_encoder((past_encoder & 0x03), (encoder & 0x03));
+
+  if (my_time.hour > 24) {my_time.hour = 0;}
+	if (my_time.minute > 59) {my_time.minute = 0;}
+  display_time();
 	past_encoder = encoder; //remember current state for next interrupt
 
 	//Loop through segments
@@ -272,10 +290,14 @@ ISR(TIMER2_OVF_vect) {
 //                                main                                 
 /***********************************************************************/
 int main(){     
+	DDRB |= 0xF0; //bits 4-7 outputs
+	DDRE = 0x40;  //set bit 6 to output
+	
 	tcnt2_init();
 	tcnt0_init();  //initalize counter timer zero
 	spi_init();    //initalize SPI port
 	sei();         //enable interrupts before entering loop
+
 	while(1){
 	}     //empty main while loop
 

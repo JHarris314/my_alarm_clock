@@ -1,4 +1,4 @@
-PRG            = lab3
+PRG            = lab4
 OBJ            = $(PRG).o
 MCU_TARGET     = atmega128
 F_CPU          = 16000000UL
