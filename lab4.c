@@ -120,6 +120,16 @@ void tcnt2_init(void){
 	TCCR2 |= (1 << WGM21)|(1 << WGM20);
 }
 
+/************************************************************************************/
+
+
+
+/************************************************************************************/
+void adc_init() {
+	ADMUX |= (1 << REFS0)|(1 << MUX2)|(1 << MUX0);
+	ADCSRA |= (1 << ADEN)|(1 << ADPS2)|(1 << ADPS1)|(1 << ADPS0)|(1 << ADIE);
+  ADCSRA |= (1 << ADSC);
+}
 //***********************************************************************************
 //                                   segment_sum                                    
 //takes a 16-bit binary input value and places the appropriate equivalent 4 digit 
@@ -157,25 +167,25 @@ void segsum(uint16_t sum) {
 //a switch statement. Each case is either skipped or increments the 
 //display value in accord with the selected state. 
 /*************************************************************************/
-void left_encoder(uint8_t past_encoder, uint8_t  encoder) {
-	uint8_t direc = (past_encoder << 2 | encoder);
-	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
-		case 0x01: 
-		case 0x0E:	  
-		case 0x08: 
-		case 0x07: OCR2++;
-							 break;
-		//Decrement
-		case 0x04: 
-		case 0x0B: 
-		case 0x02: 
-		case 0x0D: OCR2--;
-		default: break;
-	}//switch
-}//right_encoder
+//void left_encoder(uint8_t past_encoder, uint8_t  encoder) {
+//	uint8_t direc = (past_encoder << 2 | encoder);
+//	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
+//		case 0x01: 
+//		case 0x0E:	  
+//		case 0x08: 
+//		case 0x07: OCR2++;
+//							 break;
+//		//Decrement
+//		case 0x04: 
+//		case 0x0B: 
+//		case 0x02: 
+//		case 0x0D: OCR2--;
+//		default: break;
+//	}//switch
+//}//right_encoder
 
 /******************************************************************************/
-//                             left_ encoder
+//                             right_ encoder
 //Takes the past encoder value and the present encoder value and shifts                                                             
 //them into an eight bit integer. This value is represented as a case in
 //a switch statement. Each case is either skipped or increments the 
@@ -184,16 +194,10 @@ void left_encoder(uint8_t past_encoder, uint8_t  encoder) {
 void right_encoder(uint8_t past_encoder, uint8_t  encoder) {
 	uint8_t direc = (past_encoder << 2 | encoder);
 	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
-		case 0x01: 
-		case 0x0E:	  
-		case 0x08: 
 		case 0x07: if (time_mode == minute_mode) {my_time.minute++;} //increment if in quad mode
 							 else if (time_mode == hour_mode) {my_time.hour++;}	 
 							  break;
 		//Decrement
-		case 0x04: 
-		case 0x0B: 
-		case 0x02: 
 		case 0x0D: if (time_mode == minute_mode) {my_time.minute--;} //increment in quad
 							 else if (time_mode == hour_mode) {my_time.hour--;}
 							  break;
@@ -248,10 +252,10 @@ ISR(TIMER2_OVF_vect) {
 	PORTA = 0xFF; //enable pull-ups
 	PORTB = 0x70;
 	//Check the buttons (0 and 1)
-	for(uint8_t i=0; i < 2; i++) {
+	for(uint8_t i=0; i < 3; i++) {
 		if(chk_buttons(i)) { //if button is pressed
 			switch(i) { //cases for buttons pressed
-				case 0: time_mode = minute_mode; //button 0 pressed
+				case 2: time_mode = minute_mode; //button 0 pressed
 								break;	
 				case 1: time_mode = hour_mode; //button 1 pressed
 								break;
@@ -270,7 +274,7 @@ ISR(TIMER2_OVF_vect) {
 
 	segsum(disp_value); //call segsum
 	right_encoder((past_encoder & 0x0C) >> 2, (encoder & 0x0C) >> 2); //encoder 1 first pair of bits
-  left_encoder((past_encoder & 0x03), (encoder & 0x03));
+ // left_encoder((past_encoder & 0x03), (encoder & 0x03));
 
   if (my_time.hour > 24) {my_time.hour = 0;}
 	if (my_time.minute > 59) {my_time.minute = 0;}
@@ -286,15 +290,24 @@ ISR(TIMER2_OVF_vect) {
 }//ISR
 
 /***********************************************************************/
+
+
+/***********************************************************************/
+ISR(ADC_vect) {
+	OCR2 = (ADC >> 2);
+	ADCSRA |= (1 << ADSC);
+}
+/***********************************************************************/
 //                                main                                 
 /***********************************************************************/
 int main(){     
 	DDRB |= 0xF0; //bits 4-7 outputs
 	DDRE = 0x40;  //set bit 6 to output
-	
 	tcnt2_init();
 	tcnt0_init();  //initalize counter timer zero
 	spi_init();    //initalize SPI port
+
+	adc_init();
 	sei();         //enable interrupts before entering loop
 
 	while(1){
