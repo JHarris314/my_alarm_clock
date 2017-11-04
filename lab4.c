@@ -58,7 +58,7 @@ uint8_t dec_to_7seg[12] = {
 	0b10110000, //number 3
 	0b10011001, //number 4
 	0b10010010, //number 5
-	0b10000011, //number 6
+	0b10000010, //number 6
 	0b11111000, //number 7
 	0b10000000, //number 8
 	0b10011000, //number 9
@@ -159,8 +159,6 @@ void segsum(uint16_t sum) {
 }//segment_sum
 
 /*************************************************************************/
-
-/*************************************************************************/
 //                              left_encoder
 //Takes the past encoder value and the present encoder value and shifts                                                             
 //them into an eight bit integer. This value is represented as a case in
@@ -205,23 +203,32 @@ void right_encoder(uint8_t past_encoder, uint8_t  encoder) {
 	}//switch
 }//right_encoder
 /*************************************************************************/
+//                           timer/counter0 ISR                          
+//When the TCNT0 overflow occurs the second is incremented. If 60 seconds
+//is hit the clock rolls over and one minute is added. Likewise, if 60 
+//minutes is hit the clock rolls over and the hour increments. This 
+//function is also responsible for flashing the colon every second. 
 /*************************************************************************/
 
 ISR(TIMER0_OVF_vect) {	
-  static uint8_t j = 0;
+  static uint8_t j = 0; //variable for colon display
 	
-	my_time.second++;
-	if (my_time.second == 59) {
+	my_time.second++; 
+	if (my_time.second > 59) { //add one minute
 		my_time.minute++;
-		my_time.second = 0;
+		if (my_time.minute > 59) { //roll over minutes and add one hour
+			my_time.hour++;
+			my_time.minute = 0;
+		}
+		my_time.second = 0; //roll over seconds
 	}
 
-	if (my_time.minute == 59 && my_time.second == 59) {my_time.hour++;}
+	//Blink the colon
 	if (j == 0)
- 		segment_data[2] = dec_to_7seg[11];
+ 		segment_data[2] = dec_to_7seg[11]; //colon is illuminated
 	else
-    segment_data[2] = dec_to_7seg[10];
-	j++;
+    segment_data[2] = dec_to_7seg[10]; //colon is off
+	j++; 
 	
 	if (j > 1) {j = 0;}
 }
@@ -231,8 +238,8 @@ void display_time () {
 	disp_value = (my_time.hour * 100) + my_time.minute;
 }
 
-/*************************************************************************/
-//                           timer/counter0 ISR                          
+/******************************************************************************/
+//                           timer/counter2 ISR                          
 //When the TCNT0 overflow interrupt occurs, the count_7ms variable is    
 //incremented. Every 7680 interrupts the minutes counter is incremented.
 //TCNT0 interrupts come at 7.8125ms internals. write to bg, read from encoders
@@ -297,18 +304,20 @@ ISR(ADC_vect) {
 	OCR2 = (ADC >> 2);
 	ADCSRA |= (1 << ADSC);
 }
+
 /***********************************************************************/
 //                                main                                 
 /***********************************************************************/
 int main(){     
 	DDRB |= 0xF0; //bits 4-7 outputs
 	DDRE = 0x40;  //set bit 6 to output
-	tcnt2_init();
-	tcnt0_init();  //initalize counter timer zero
-	spi_init();    //initalize SPI port
 
-	adc_init();
-	sei();         //enable interrupts before entering loop
+	tcnt2_init(); //initialize timer/counter two
+	tcnt0_init(); //initialize timer/counter zero
+	spi_init();   //initialize SPI port
+	adc_init();   //initialize ADC
+
+	sei();        //enable interrupts before entering loop
 
 	while(1){
 	}     //empty main while loop
