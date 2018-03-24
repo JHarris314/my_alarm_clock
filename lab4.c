@@ -1,218 +1,50 @@
 //****************************************************************************/
-//   Name: Jesse Harris
-//   Date: 25OCT2017
-//Program: lab4.c
-//Purpose: 
-//****************************************************************************/
-
-
-// Expected Connections:
-// Bargraph board           Mega128 board 
-// --------------      ----------------------    
-//     reglck            PORTB bit 0 (ss_n)                      
-//     srclk             PORTB bit 1 (sclk)
-//     sdin              PORTB bit 2 (mosi)
-//     oe_n                   ground
-//     gnd2                   ground
-//     vdd2                     vcc
-//     sd_out               no connect
+//Name: Jesse Harris
+//Date: 06DEC2017
+//Program: final lab (lab4.c)
+//Purpose: The purpose of this lab is to develop an alarm clock from the
+//already existing clock. The alarm will be a seperate mode from the clock and
+//can be set using the push-buttons and the right encoder. The left encoder is
+//used to change the volume of the alarm. Furthermore, a function that dims the
+//display using the ADC and an external photo-resistor circuit is developed. is
 //
-// Encoder board            Mega128 board
-// -------------       ----------------------
-//    sh/ld_n 					PORTE bit 6 (enbl)
-//      clk             PORTB bit 1 (sclk)
-//      qh              PORTB bit 3 (miso)    
-//    clk_ihn									ground
-//      ser                   ground
-//      gnd                   ground
-//      vdd                   vcc_1
-//      qh_n								no connect
+//In addition, this code implements an internal temperature sensor and a radio.
+//****************************************************************************/
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
-#define clr_bit(x,y) (x&=~(1<<y)) //clears a bit
-#define set_bit(x,y) (x|=(1<<y))  //sets a bit 
-#define minute_mode 0x01
-#define hour_mode 0x10
+#include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
-struct time {
-		uint16_t second;
-		uint16_t minute;
-		uint16_t hour;
-};
+#include "hd44780.h"
+#include "time.h"
+#include "initialize.h"
+#include "seven_seg.h"
+#include "encoders.h"
+#include "globals.h"
+#include "check_buttons.h"
+#include "lm73_functions.h"
+#include "twi_master.h"
+#include "si4734.h"
 
-volatile struct time my_time = {0, 0, 0};
-volatile uint16_t disp_value = 0; //value to be displayed on the 7seg
-volatile uint8_t time_mode = minute_mode;
+#define clr_bit(x, y) (x&=~(1<<y)); //clears a bit
+#define set_bit(x, y) (x|=(1<<y));  //sets a bit 
 
-//holds data to be sent to the segments. logic zero turns segment o
-
-volatile uint8_t segment_data[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
-//decimal to 7-segment LED display encodings, logic "0" turns on segment
-uint8_t dec_to_7seg[12] = {
-	0b11000000, //number 0
-	0b11111001, //number 1
-	0b10100100, //number 2
-	0b10110000, //number 3
-	0b10011001, //number 4
-	0b10010010, //number 5
-	0b10000010, //number 6
-	0b11111000, //number 7
-	0b10000000, //number 8
-	0b10011000, //number 9
-	0b11111111, //all segments off
-	0b11111100  //all segments on (used for testing)
-};
 
 //******************************************************************************/
-//                            chk_buttons                                      
-//Checks the state of the button number passed to it. It shifts in ones till   
-//the button is pushed. Function returns a 1 only once per debounced button    
-//push so a debounce and toggle function can be implemented at the same time.  
-//Adapted to check all buttons from Ganssel's "Guide to Debouncing"            
-//Expects active low pushbuttons on PINA port.  Debounce time is determined by 
-//external loop delay times 12. 
-//******************************************************************************/
-uint8_t chk_buttons(uint8_t button) {
-	static uint16_t state[8] = {0}; //holds present state
-	state[button] = (state[button] << 1) | (! bit_is_clear(PINA, button)) | 0xE000; //establishes state of button
-	if (state[button] == 0xF000) return 1; //if 4 MSB's are high return 1
-	return 0;
-}
-//*****************************************************************************
-
-//                            spi_init                               
-//Initalizes the SPI port on the mega128. Does not do any further   
-//external device specific initalizations.  Sets up SPI to be:                        
-//master mode, clock=clk/2, cycle half phase, low polarity, MSB first
-//interrupts disabled, poll SPIF bit in SPSR to check xmit completion
-/***********************************************************************/
-void spi_init(void){
-	DDRB  |= 0x07;   //Turn on SS, MOSI, SCLK
-	SPCR  |= (1 << SPE) | (1 << MSTR);  //enable SPI, master mode 
-	SPSR  |= (1 << SPI2X); // double speed operation
-}//spi_init
-
-/***********************************************************************/
-//                              tcnt0_init                             
-//Initalizes timer/counter1 (TCNT1). TCNT1 is running in async mode
-//with external 32khz crystal.  Runs in normal mode with no prescaling.
-//Interrupt occurs at overflow 0xFF.
-//
-void tcnt0_init(void){
-	TIMSK |= (1 << TOIE0); //enable TCNT0 overflow interrupt
-	TCCR0 |= (1 << CS02) | (1 << CS00); //normal mode, prescale of 128
-	ASSR  |= _BV(AS0);
-}
-
-/***********************************************************************/
-//                              tcnt2_init                             
-//Initalizes timer/counter0 (TCNT1). TCNT1 is running in async mode
-//Runs in normal mode with no prescaling.
-//Interrupt occurs at overflow 0xFF.
-//*********************************************************************/
-void tcnt2_init(void){
-	TIMSK  |=  (1 << TOIE2); //enable TCNT2 overflow interrupt
-	//Normal mode, 128 pre-scale, Set OC2 on compare, clear OC2 at BOTTOM
-	TCCR2 |= (1 << CS21)|(1 << CS20)|(1 << COM21)|(1 << COM20);
-	TCCR2 |= (1 << WGM21)|(1 << WGM20);
-}
-
-/************************************************************************************/
-
-
-
-/************************************************************************************/
-void adc_init() {
-	ADMUX |= (1 << REFS0)|(1 << MUX2)|(1 << MUX0);
-	ADCSRA |= (1 << ADEN)|(1 << ADPS2)|(1 << ADPS1)|(1 << ADPS0)|(1 << ADIE);
-  ADCSRA |= (1 << ADSC);
-}
-//***********************************************************************************
-//                                   segment_sum                                    
-//takes a 16-bit binary input value and places the appropriate equivalent 4 digit 
-//BCD segment code in the array segment_data for display.                       
-//array is loaded at exit as:  |digit3|digit2|colon|digit1|digit0|
-//***********************************************************************************
-void segsum(uint16_t sum) {
-	//break up decimal sum into 4 digit-segments
-	uint8_t digit3 = dec_to_7seg[(sum/1000)];     //thousands place
-	uint8_t digit2 = dec_to_7seg[(sum/100) % 10]; //hundreds place
-	uint8_t digit1 = dec_to_7seg[(sum/10)  % 10]; //tens place
-	uint8_t digit0 = dec_to_7seg[(sum/1)   % 10]; //ones place 
-
-//	//blank out leading zero digits
-//	if (sum < 1000) { 
-//		digit3 = dec_to_7seg[10]; //blank out thousands place
-//		if (sum < 100)  {  //blank out hundreds place      
-//			digit2 = digit3;
-//			if (sum < 10) {digit1 = digit2;} //blank out tens place
-//		}
-//	} 
-	//now move data to right place for misplaced colon position
-	segment_data[0] = digit0;
-	segment_data[1] = digit1;
-	segment_data[3] = digit2;
-	segment_data[4] = digit3;
-}//segment_sum
-
-/*************************************************************************/
-//                              left_encoder
-//Takes the past encoder value and the present encoder value and shifts                                                             
-//them into an eight bit integer. This value is represented as a case in
-//a switch statement. Each case is either skipped or increments the 
-//display value in accord with the selected state. 
-/*************************************************************************/
-//void left_encoder(uint8_t past_encoder, uint8_t  encoder) {
-//	uint8_t direc = (past_encoder << 2 | encoder);
-//	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
-//		case 0x01: 
-//		case 0x0E:	  
-//		case 0x08: 
-//		case 0x07: OCR2++;
-//							 break;
-//		//Decrement
-//		case 0x04: 
-//		case 0x0B: 
-//		case 0x02: 
-//		case 0x0D: OCR2--;
-//		default: break;
-//	}//switch
-//}//right_encoder
-
-/******************************************************************************/
-//                             right_ encoder
-//Takes the past encoder value and the present encoder value and shifts                                                             
-//them into an eight bit integer. This value is represented as a case in
-//a switch statement. Each case is either skipped or increments the 
-//display value in accord with the selected state. 
-/*****************************************************************************/
-void right_encoder(uint8_t past_encoder, uint8_t  encoder) {
-	uint8_t direc = (past_encoder << 2 | encoder);
-	switch (direc) { //Determine which transistions must be skipped in order to comply with disply mode
-		case 0x07: if (time_mode == minute_mode) {my_time.minute++;} //increment if in quad mode
-							 else if (time_mode == hour_mode) {my_time.hour++;}	 
-							  break;
-		//Decrement
-		case 0x0D: if (time_mode == minute_mode) {my_time.minute--;} //increment in quad
-							 else if (time_mode == hour_mode) {my_time.hour--;}
-							  break;
-		default: break;
-	}//switch
-}//right_encoder
-/*************************************************************************/
 //                           timer/counter0 ISR                          
-//When the TCNT0 overflow occurs the second is incremented. If 60 seconds
-//is hit the clock rolls over and one minute is added. Likewise, if 60 
-//minutes is hit the clock rolls over and the hour increments. This 
-//function is also responsible for flashing the colon every second. 
-/*************************************************************************/
+//When the TCNT0 overflow occurs the second is incremented. If 60 seconds is
+//hit the clock rolls over and one minute is added. Likewise, if 60 minutes is
+//hit the clock rolls over and the hour increments. This function is also
+//responsible for flashing the colon every second. 
+//******************************************************************************/
 
-ISR(TIMER0_OVF_vect) {	
-  static uint8_t j = 0; //variable for colon display
-	
+ISR(TIMER0_OVF_vect) {
+	static uint8_t j = 0;
+
 	my_time.second++; 
 	if (my_time.second > 59) { //add one minute
 		my_time.minute++;
@@ -223,54 +55,151 @@ ISR(TIMER0_OVF_vect) {
 		my_time.second = 0; //roll over seconds
 	}
 
-	//Blink the colon
-	if (j == 0)
- 		segment_data[2] = dec_to_7seg[11]; //colon is illuminated
-	else
-    segment_data[2] = dec_to_7seg[10]; //colon is off
-	j++; 
-	
-	if (j > 1) {j = 0;}
+	if (my_alarm.minute > 59) {
+		my_alarm.hour++;
+		my_alarm.minute = 0;
+	}
+
+	if (snooze_count > 0) {snooze_count--;}
+
+	//Blink the colon when not in RADIO_MODE
+	if (clock_mode != RADIO_MODE) {
+		if (j == 0)
+			segment_data[2] = dec_to_7seg[11]; //colon is illuminated
+		else
+			segment_data[2] = dec_to_7seg[10]; //colon is off
+		j++; 
+
+		if (j > 1) {j = 0;}
+
+		alarm_toggle = !alarm_toggle; //toggle alarm sound each second
+
+		twi_start_rd(LM73_ADDRESS, lm73_rd_buf, 2);
+	}
+}//ISR
+
+//******************************************************************************/
+//                           timer/counter1 ISR                          
+//When TCNT1 counter is equal to the compare register value this ISR is called.
+//The timer/counter1 ISR is responisble for toggleing PORTD bit 5 in order to
+//generate a square wave at the desired frquency of 800 Hz.
+//******************************************************************************/
+ISR(TIMER1_COMPA_vect) {
+	DDRD |= (1 << PD5); //set PD5 as an output
+	if (alarm_engaged && alarm_toggle){ //sound alarm in one second increments
+		PORTD ^= (1 << PD5);
+	}//if
+	else {PORTD = 0;}
+}//ISR
+
+//******************************************************************************/
+//																alarm_handler	
+//This function handles what occurs when the user selects the alarm to be armed. 
+//It takes in a bool called alarm_armed and depending on the global snooze_count
+//variable will display on the LCD that the alarm is on. If the alarm time and
+//the clock time are the same, the disply changes and the alarm_engaged boolean
+//is set true, which enables PORTD bit 5 to output.
+//******************************************************************************/
+void alarm_handler(bool alarm_armed) {
+	if (alarm_armed && snooze_count == 0) {
+		strcpy(alarm_array, "ALARM:ON");
+		if (
+				my_alarm.hour == my_time.hour &&
+				my_alarm.minute == my_time.minute
+			 ) {
+			strcpy(alarm_array, "TIME TO RISE");
+			alarm_engaged = true;
+			return;
+		}
+	}
+	alarm_engaged = false;
 }
 
 
-void display_time () {
-	disp_value = (my_time.hour * 100) + my_time.minute;
-}
-
-/******************************************************************************/
+//******************************************************************************/
 //                           timer/counter2 ISR                          
-//When the TCNT0 overflow interrupt occurs, the count_7ms variable is    
+//When the TCNT2 overflow interrupt occurs, the count_7ms variable is    
 //incremented. Every 7680 interrupts the minutes counter is incremented.
 //TCNT0 interrupts come at 7.8125ms internals. write to bg, read from encoders
 // 1/32768         = 30.517578uS
 //(1/32768)*256    = 7.8125ms
 //(1/32768)*256*64 = 500mS
-//*************************************************************************/
+//******************************************************************************/
 ISR(TIMER2_OVF_vect) {
 	static uint8_t encoder = 0; //stores current encoder state value (11, 10, 00, 01)
 	static uint8_t past_encoder = 0; //stores previous encoder state value
 	static uint8_t j = 0; //segment display variable
+	static bool alarm_armed = false; //used to set arming
+
 	//Load data from the encoders
 	clr_bit(PORTE, PE6); //load data in the 165
 	set_bit(PORTE, PE6); //shift data out the 165
-	
+
 	DDRA = 0x00;  //intitialize PORTA to inputs
 	PORTA = 0xFF; //enable pull-ups
 	PORTB = 0x70;
-	//Check the buttons (0 and 1)
-	for(uint8_t i=0; i < 3; i++) {
+
+	//Check the buttons
+	for(uint8_t i=0; i < 8; i++) {
 		if(chk_buttons(i)) { //if button is pressed
 			switch(i) { //cases for buttons pressed
-				case 2: time_mode = minute_mode; //button 0 pressed
-								break;	
-				case 1: time_mode = hour_mode; //button 1 pressed
+				case 1: time = TIME_SELECT_HOUR; //choose hour using right encoder
+								break;
+				case 2: time = TIME_SELECT_MINUTE; //choose minute using right encoder
+								break;
+				case 3: clock_mode = (
+										(clock_mode == TIME_MODE)
+										? RADIO_MODE
+										: TIME_MODE
+										);
+								clear_display();
+								break;
+				case 5: if (clock_mode != SNOOZE_MODE) { //set snooze mode
+									clock_mode = SNOOZE_MODE;
+									snooze_count = 10;
+								}
+								else {
+									clock_mode = TIME_MODE; //else enter time mode
+									snooze_count = 0;
+								}
+								break;
+				case 6: alarm_armed = !alarm_armed; //toggle arming the alarm
+								break;
+				case 7: clock_mode = ( //ternary for mode selection
+										(clock_mode == TIME_MODE)
+										? ALARM_MODE
+										: TIME_MODE
+										);
+								clear_display();	
 								break;
 			}//switch
 		}//if			
 	}//for
 
-	SPDR = my_time.second;
+	switch (clock_mode) {
+		case ALARM_MODE: //display the alarm time
+			disp_value = (my_alarm.hour * 100) + my_alarm.minute;
+		  strcpy(alarm_array, "SET ALARM"); //write to LCD display
+			break;
+		case TIME_MODE: //display the time
+			disp_value = (my_time.hour * 100) + my_time.minute;
+			strcpy(alarm_array, "ALARM:OFF"); //write to LCD display
+			break;
+		case SNOOZE_MODE: //set snooze
+			alarm_engaged = false;
+			strcpy(alarm_array, "SNOOZE");
+			break;
+		case RADIO_MODE:
+		  segment_data[2] = dec_to_7seg[10];	
+			disp_value = encoder_freq/10; //shift to rid display of trailing zero
+			strcpy(alarm_array, "RADIO ON");
+			break;
+		default: break;
+	} //switch
+
+	alarm_handler(alarm_armed); //handle the alarm functionality
+
+	SPDR = my_time.second; //shift seconds (will display on bar graph)
 	while (bit_is_clear(SPSR, SPIF)){} //wait until the end of the load
 	PORTB |= 0x01;  //rising edge for ss_n pin on 595
 	PORTB &= ~0x01; //falling edge for ss_n pin on 595
@@ -280,12 +209,13 @@ ISR(TIMER2_OVF_vect) {
 	encoder &= (0x0F); //set all encoder bits (3:0) high
 
 	segsum(disp_value); //call segsum
-	right_encoder((past_encoder & 0x0C) >> 2, (encoder & 0x0C) >> 2); //encoder 1 first pair of bits
- // left_encoder((past_encoder & 0x03), (encoder & 0x03));
+	//Encoder values are stored in 4 bits. The upper two bits are for the
+	//right encoder and the lower two are for the left. 
+	right_encoder((past_encoder & 0x0C) >> 2, (encoder & 0x0C) >> 2);
+	left_encoder((past_encoder & 0x03), (encoder & 0x03));
 
-  if (my_time.hour > 24) {my_time.hour = 0;}
+	if (my_time.hour > 24) {my_time.hour = 0;}
 	if (my_time.minute > 59) {my_time.minute = 0;}
-  display_time();
 	past_encoder = encoder; //remember current state for next interrupt
 
 	//Loop through segments
@@ -294,32 +224,91 @@ ISR(TIMER2_OVF_vect) {
 	PORTA = segment_data[j];
 	PORTB = (j << 4);
 	j++;
+
+	strncpy(temp_in_display, temperature, 16);
+	strncpy(alarm_display, alarm_array, 16);
+	refresh_lcd(lcd_string_array);
 }//ISR
 
-/***********************************************************************/
-
-
-/***********************************************************************/
+//******************************************************************************/
+//																	ISR(ADC_vect)
+//This ISR enables the ADC in such a way as to handle the photo-resistor and 
+//provide a dimming effect in the presence of low light.
+//******************************************************************************/
 ISR(ADC_vect) {
-	OCR2 = (ADC >> 2);
-	ADCSRA |= (1 << ADSC);
+	OCR2 = (ADC >> 2); //generates waveform on the OC2 pin (shift right to account for 10-bit value)
+	ADCSRA |= (1 << ADSC); //write start conversion bit for single conversion mode
 }
 
-/***********************************************************************/
+//******************************************************************************/
+//																	ISR(USART0_vect)
+//This ISR deals with the ATMega48 and its USART communication of external 
+//temperature.
+//******************************************************************************/
+//ISR(USART0_RX_TX_vect) {
+//	static uint8_t i;
+//	out_temp = UDR0;	//get the outside temp.
+//	lcd_str_array[i++] = out_temp;
+//
+//  //If at the end, set the flag and reset the index
+//	if (out_temp == '\0') {
+//		rcv_rdy = 1;
+//		i=0;
+//	}
+//}
+//******************************************************************************/
+//																	ISR(INT7_vect)
+//******************************************************************************/
+ISR(INT7_vect) {STC_interrupt = TRUE;}
+//******************************************************************************/
 //                                main                                 
-/***********************************************************************/
+//******************************************************************************/
 int main(){     
 	DDRB |= 0xF0; //bits 4-7 outputs
 	DDRE = 0x40;  //set bit 6 to output
 
-	tcnt2_init(); //initialize timer/counter two
-	tcnt0_init(); //initialize timer/counter zero
-	spi_init();   //initialize SPI port
-	adc_init();   //initialize ADC
+	//Call initializing functions
+	tcnt2_init();
+	tcnt0_init();
+	tcnt3_init();
+	spi_init();  
+	tcnt1_init();
+	adc_init();  
+	lcd_init(); 
+	init_twi();	
+	radio_init();
 
-	sei();        //enable interrupts before entering loop
+	//enable interrupts
+	sei();
+
+	//Fire up the radio
+	fm_pwr_up();
+	current_fm_freq = encoder_freq;
+	fm_tune_freq();
+
+	twi_start_wr(LM73_ADDRESS, lm73_wr_buf, 1);
+	//radio_pwr_dwn();
 
 	while(1){
-	}     //empty main while loop
+		lm73_temp = lm73_rd_buf[0];   //Read in 16-bit temperature data
+		lm73_temp = (lm73_temp << 8); 
+		lm73_temp |= lm73_rd_buf[1];
+		disp_temp = (lm73_temp/128);  //convert to celcius value to be displayed
+		sprintf(temperature, "IN:%dC\xDFOUT: :[", disp_temp);
+		end_of_string = strlen(temperature); 
 
+		
+    //Place spaces in empty index
+		for (uint8_t i = end_of_string; i < 16; i++)
+			temperature[i] = ' ';
+
+    //
+		if (clock_mode == RADIO_MODE) {
+			fm_pwr_up();
+			current_fm_freq = encoder_freq;
+			fm_tune_freq();
+			_delay_ms(100);
+		}
+		if (clock_mode != RADIO_MODE) {radio_pwr_dwn();}
+	} //empty main while loop
 } //main
